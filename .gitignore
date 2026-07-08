@@ -1,0 +1,17 @@
+# Generated master database (large, reproducible from rawData.csv)
+*.db
+*.db-wal
+*.db-shm
+
+# Source dataset (large; reproducible input, kept out of git / seeded separately)
+rawData.csv
+
+# Crawled HTML store (large, re-fetchable)
+crawl_store/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/

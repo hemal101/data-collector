@@ -1,0 +1,95 @@
+name: Enrich companies (scheduled)
+
+# Runs a batch of the enrichment pipeline on a schedule and persists the
+# SQLite database as a gzipped GitHub Release asset (tag: db-latest).
+#
+# GitHub notes baked into this design:
+#   * cron minimum granularity is 5 minutes (per-minute is not possible here).
+#   * a >100MB file cannot be committed to git, so the DB lives as a release
+#     asset instead of in the repo.
+#   * GitHub-hosted runners block outbound SMTP (port 25), so Phase 9 email
+#     verification is intentionally skipped.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"        # every 5 minutes (GitHub minimum)
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Companies to process per phase"
+        default: "500"
+      workers:
+        description: "Concurrent workers"
+        default: "16"
+
+permissions:
+  contents: write                 # needed to create/update the release asset
+
+# Never let two runs touch the database at the same time.
+concurrency:
+  group: enrich-db
+  cancel-in-progress: false
+
+env:
+  DB_TAG: db-latest
+  DB_ASSET: companies.db.gz
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore database from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          if gh release download "$DB_TAG" -p "$DB_ASSET" -D . 2>/dev/null; then
+            gunzip -f "$DB_ASSET"
+            echo "Restored $(du -h companies.db | cut -f1) database from release '$DB_TAG'."
+          elif [ -f rawData.csv ]; then
+            echo "No release asset yet - bootstrapping from rawData.csv (Phases 1-3)."
+            python build_database.py --db companies.db
+          else
+            echo "::error::No '$DB_ASSET' on release '$DB_TAG' and no rawData.csv to bootstrap."
+            echo "::error::Seed it once locally: see scripts/seed_release.sh"
+            exit 1
+          fi
+
+      - name: Run enrichment batch (Phases 4-8, 10; verify skipped)
+        run: |
+          python run_enrichment.py batch \
+            --db companies.db \
+            --store crawl_store \
+            --limit "${{ github.event.inputs.limit || '500' }}" \
+            --workers "${{ github.event.inputs.workers || '16' }}" \
+            --random
+
+      - name: Publish updated database to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          gzip -f -k companies.db          # -> companies.db.gz, keep the .db too
+          gh release view "$DB_TAG" >/dev/null 2>&1 || \
+            gh release create "$DB_TAG" \
+              --title "Company database (rolling latest)" \
+              --notes "Auto-updated by the enrich workflow. Download companies.db.gz."
+          gh release upload "$DB_TAG" companies.db.gz --clobber
+          echo "Uploaded $(du -h companies.db.gz | cut -f1) to release '$DB_TAG'."
+
+      - name: Job summary
+        if: always()
+        run: python scripts/status.py companies.db >> "$GITHUB_STEP_SUMMARY"
