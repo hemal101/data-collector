@@ -69,15 +69,20 @@ jobs:
           fi
 
       - name: Run enrichment batch (Phases 4-8, 10; verify skipped)
+        id: batch
         run: |
+          set -o pipefail
           python run_enrichment.py batch \
             --db companies.db \
             --store crawl_store \
             --limit "${{ github.event.inputs.limit || '500' }}" \
             --workers "${{ github.event.inputs.workers || '16' }}" \
-            --random
+            --random | tee batch.log
+          CHANGED=$(grep -oE 'BATCH_CHANGED=[01]' batch.log | tail -1 | cut -d= -f2)
+          echo "changed=${CHANGED:-1}" >> "$GITHUB_OUTPUT"
 
       - name: Publish updated database to release
+        if: steps.batch.outputs.changed == '1'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -89,6 +94,10 @@ jobs:
               --notes "Auto-updated by the enrich workflow. Download companies.db.gz."
           gh release upload "$DB_TAG" companies.db.gz --clobber
           echo "Uploaded $(du -h companies.db.gz | cut -f1) to release '$DB_TAG'."
+
+      - name: Nothing changed
+        if: steps.batch.outputs.changed != '1'
+        run: echo "No new companies processed this run - skipping DB upload."
 
       - name: Job summary
         if: always()

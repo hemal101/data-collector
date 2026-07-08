@@ -2,6 +2,7 @@
 *.db
 *.db-wal
 *.db-shm
+*.db.gz
 
 # Source dataset (large; reproducible input, kept out of git / seeded separately)
 rawData.csv

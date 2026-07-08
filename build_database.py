@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
+import sqlite3
 import sys
 import time
 
@@ -97,7 +99,30 @@ def main() -> int:
     ap.add_argument("--db", default="companies.db")
     ap.add_argument("--startups-only", action="store_true")
     ap.add_argument("--limit", type=int, default=None, help="max rows (for testing)")
+    ap.add_argument("--force", action="store_true",
+                    help="rebuild even if the DB already contains enrichment data "
+                         "(this WILL delete Phases 4-10 via ON DELETE CASCADE)")
     args = ap.parse_args()
+
+    # Guard: rebuilding drops+recreates `companies`, and the enrichment tables
+    # cascade-delete off it. Refuse to silently destroy Phase 4-10 work.
+    if os.path.exists(args.db) and not args.force:
+        existing = db.connect(args.db)
+        enriched = 0
+        for tbl in ("website_probes", "crawled_pages", "company_ai",
+                    "company_contacts", "company_scores"):
+            try:
+                (n,) = existing.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()
+                enriched += n
+            except sqlite3.OperationalError:
+                pass  # enrichment table doesn't exist yet
+        existing.close()
+        if enriched:
+            print(f"Refusing to rebuild '{args.db}': it holds {enriched:,} enrichment "
+                  "rows (Phases 4-10) that a rebuild would CASCADE-DELETE.")
+            print("  - To build fresh elsewhere:  --db companies_new.db")
+            print("  - To wipe and rebuild anyway: --force")
+            sys.exit(1)
 
     t0 = time.time()
     print(f"Phase 1/2  Reading + normalizing {args.input} ...")

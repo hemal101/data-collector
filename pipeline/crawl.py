@@ -15,10 +15,12 @@ import gzip
 import hashlib
 import os
 import re
+from urllib.robotparser import RobotFileParser
 
 import httpx
 from bs4 import BeautifulSoup
 
+from pipeline.discovery import USER_AGENT
 from pipeline.normalize import extract_domain
 
 # page_type -> substrings that identify it in a link's href or anchor text.
@@ -90,15 +92,48 @@ def _fetch(client: httpx.Client, url: str) -> httpx.Response | None:
         return None
 
 
+def _load_robots(client: httpx.Client, base_url: str) -> RobotFileParser:
+    """Fetch and parse robots.txt for the origin of ``base_url``.
+
+    On any failure we return a permissive parser (fail-open, like browsers do),
+    but a reachable robots.txt with Disallow rules is always honored.
+    """
+    rp = RobotFileParser()
+    robots_url = str(httpx.URL(base_url).copy_with(path="/robots.txt", query=None, fragment=None))
+    try:
+        resp = client.get(robots_url)
+        if resp.status_code == 200 and resp.text:
+            rp.parse(resp.text.splitlines())
+        else:
+            rp.allow_all = True
+    except Exception:  # noqa: BLE001
+        rp.allow_all = True
+    return rp
+
+
 def crawl_company(
     client: httpx.Client,
     company_id: int,
     home_url: str,
     domain: str,
     store_root: str,
+    respect_robots: bool = True,
 ) -> list[dict]:
-    """Crawl homepage + discovered public pages. Returns crawled_pages rows."""
+    """Crawl homepage + discovered public pages. Returns crawled_pages rows.
+
+    When ``respect_robots`` is set (default), URLs disallowed by the site's
+    robots.txt for our user-agent are skipped - important when crawling from
+    shared infrastructure like GitHub Actions.
+    """
     pages: list[dict] = []
+
+    robots = _load_robots(client, home_url) if respect_robots else None
+
+    def _allowed(url: str) -> bool:
+        return robots is None or robots.can_fetch(USER_AGENT, url)
+
+    if not _allowed(home_url):
+        return pages  # site asked us not to crawl
 
     home = _fetch(client, home_url)
     if home is None:
@@ -128,6 +163,8 @@ def crawl_company(
         return pages
 
     for page_type, url in discover_page_urls(home_url, home_html, domain).items():
+        if not _allowed(url):
+            continue
         resp = _fetch(client, url)
         if resp is not None:
             _record(page_type, resp)

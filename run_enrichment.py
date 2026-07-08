@@ -125,9 +125,13 @@ def cmd_crawl(args) -> None:
             tls.client = discovery.make_client()
         return tls.client
 
+    respect_robots = not getattr(args, "ignore_robots", False)
+
     def work(row):
         cid, domain, final_url = row
-        pages = crawl.crawl_company(_client(), cid, final_url, domain, args.store)
+        pages = crawl.crawl_company(
+            _client(), cid, final_url, domain, args.store, respect_robots=respect_robots
+        )
         return cid, pages
 
     done = total_pages = 0
@@ -382,12 +386,28 @@ def cmd_batch(args) -> None:
             db=args.db, store=args.store, limit=args.limit,
             workers=args.workers, random=args.random,
             no_patterns=False, sender="", helo="verifier.local",
+            ignore_robots=getattr(args, "ignore_robots", False),
         )
         for k, v in overrides.items():
             setattr(ns, k, v)
         return ns
 
+    def _fingerprint() -> tuple:
+        c = _connect(args.db)
+        fp = c.execute(
+            """
+            SELECT (SELECT COUNT(*) FROM website_probes),
+                   (SELECT COUNT(*) FROM crawled_pages),
+                   (SELECT COUNT(*) FROM company_ai),
+                   (SELECT COUNT(*) FROM company_contacts),
+                   (SELECT COUNT(*) FROM company_scores)
+            """
+        ).fetchone()
+        c.close()
+        return fp
+
     t0 = time.time()
+    before = _fingerprint()
     print(f"=== BATCH START (limit={args.limit}/phase) ===")
     cmd_discover(sub())
     cmd_crawl(sub())
@@ -414,6 +434,9 @@ def cmd_batch(args) -> None:
     print(f"[totals] probes={stats[0]} pages={stats[1]} ai={stats[2]} "
           f"contacts={stats[3]} scored={stats[4]}")
     conn.close()
+    # Signal for CI: only re-publish the DB asset when something actually changed.
+    changed = 1 if _fingerprint() != before else 0
+    print(f"BATCH_CHANGED={changed}")
 
 
 def main() -> int:
@@ -426,8 +449,12 @@ def main() -> int:
 
     ap = argparse.ArgumentParser(description="Phases 4-10 enrichment pipeline")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("discover", "crawl", "extract", "ai", "score"):
+    for name in ("discover", "extract", "ai", "score"):
         sub.add_parser(name, parents=[common])
+
+    p_crawl = sub.add_parser("crawl", parents=[common])
+    p_crawl.add_argument("--ignore-robots", action="store_true",
+                         help="do NOT honor robots.txt (discouraged)")
 
     p_contacts = sub.add_parser("contacts", parents=[common])
     p_contacts.add_argument("--no-patterns", action="store_true",
@@ -440,6 +467,8 @@ def main() -> int:
     p_batch = sub.add_parser("batch", parents=[common])
     p_batch.add_argument("--with-verify", action="store_true",
                          help="also run SMTP verification (needs outbound port 25)")
+    p_batch.add_argument("--ignore-robots", action="store_true",
+                         help="do NOT honor robots.txt (discouraged)")
 
     args = ap.parse_args()
 
