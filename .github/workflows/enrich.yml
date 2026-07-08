@@ -11,8 +11,11 @@ name: Enrich companies (scheduled)
 #     verification is intentionally skipped.
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"        # every 5 minutes (GitHub minimum)
+  # Scheduled runs are TEMPORARILY DISABLED. Re-enable by uncommenting the
+  # cron below. Until then, the pipeline only runs when triggered manually
+  # (Actions tab -> this workflow -> "Run workflow").
+  # schedule:
+  #   - cron: "*/5 * * * *"      # every 5 minutes (GitHub minimum)
   workflow_dispatch:
     inputs:
       limit:
