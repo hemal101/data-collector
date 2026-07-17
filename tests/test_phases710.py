@@ -117,6 +117,23 @@ def test_score_empty():
     total, breakdown = score.score_company({})
     assert total == 0 and breakdown == {}
 
+def test_score_email_requires_crawl_not_pattern():
+    """Document the intended has_email signal for cmd_score's SQL.
+
+    Pattern-generated role addresses (info@/sales@/...) must NOT grant the
+    +20 Email points - only crawl-sourced contacts that aren't invalid/disposable.
+    """
+    # Pattern-only: no email points.
+    pattern_only = {"has_website": True}  # no has_email
+    total, breakdown = score.score_company(pattern_only)
+    assert "has_email" not in breakdown
+    assert total == 10
+    # Crawl-sourced email: +20.
+    with_crawl_email = {"has_website": True, "has_email": True}
+    total, breakdown = score.score_company(with_crawl_email)
+    assert breakdown["has_email"] == 20
+    assert total == 30
+
 
 def _run():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

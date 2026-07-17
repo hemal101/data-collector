@@ -13,6 +13,7 @@ from __future__ import annotations
 # factor key -> (points, human label)
 SCORE_FACTORS: dict[str, tuple[int, str]] = {
     "has_website": (10, "Website"),
+    # Crawl-sourced contact only (not pattern-generated info@/sales@ guesses).
     "has_email": (20, "Email"),
     "has_linkedin": (5, "LinkedIn"),
     "has_verified_email": (30, "Verified Email"),

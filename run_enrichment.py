@@ -73,28 +73,36 @@ def cmd_discover(args) -> None:
 
     def work(row):
         cid, domain, website = row
-        dns = discovery.lookup_dns(domain)
-        probe = discovery.probe_website(_client(), domain, website)
-        # Refine hosting using the HTTP Server header too.
-        dns["hosting_provider"] = discovery.detect_hosting_provider(
-            dns.get("a_records", []), dns.get("ns_records", []),
-            dns.get("_reverse_dns"), probe.get("server_header"),
-        )
-        return cid, probe, dns
+        try:
+            dns = discovery.lookup_dns(domain)
+            probe = discovery.probe_website(_client(), domain, website)
+            # Refine hosting using the HTTP Server header too.
+            dns["hosting_provider"] = discovery.detect_hosting_provider(
+                dns.get("a_records", []), dns.get("ns_records", []),
+                dns.get("_reverse_dns"), probe.get("server_header"),
+            )
+            return cid, probe, dns, None
+        except Exception as e:  # noqa: BLE001 - never abort the whole batch
+            return cid, {
+                "domain": domain, "input_url": website, "alive": False,
+                "error": f"{type(e).__name__}: {e}"[:200],
+            }, {"domain": domain}, e
 
-    done = alive = 0
+    done = alive = errors = 0
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
-        for cid, probe, dns in ex.map(work, rows):
+        for cid, probe, dns, err in ex.map(work, rows):
             enrich_db.save_probe(conn, cid, probe)
             enrich_db.save_dns(conn, cid, dns)
             done += 1
             alive += 1 if probe.get("alive") else 0
+            if err is not None:
+                errors += 1
             if done % 50 == 0:
                 conn.commit()
                 print(f"  {done}/{len(rows)}  alive={alive}  ({done/(time.time()-t0):.1f}/s)")
     conn.commit()
-    print(f"[discover] done: {done} probed, {alive} alive, {time.time()-t0:.1f}s")
+    print(f"[discover] done: {done} probed, {alive} alive, {errors} errors, {time.time()-t0:.1f}s")
     conn.close()
 
 
@@ -129,24 +137,29 @@ def cmd_crawl(args) -> None:
 
     def work(row):
         cid, domain, final_url = row
-        pages = crawl.crawl_company(
-            _client(), cid, final_url, domain, args.store, respect_robots=respect_robots
-        )
-        return cid, pages
+        try:
+            pages = crawl.crawl_company(
+                _client(), cid, final_url, domain, args.store, respect_robots=respect_robots
+            )
+            return cid, pages, None
+        except Exception as e:  # noqa: BLE001 - never abort the whole batch
+            return cid, [], e
 
-    done = total_pages = 0
+    done = total_pages = errors = 0
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
-        for cid, pages in ex.map(work, rows):
+        for cid, pages, err in ex.map(work, rows):
             for page in pages:
                 enrich_db.save_crawled_page(conn, cid, page)
             total_pages += len(pages)
             done += 1
+            if err is not None:
+                errors += 1
             if done % 25 == 0:
                 conn.commit()
                 print(f"  {done}/{len(rows)}  pages={total_pages}  ({done/(time.time()-t0):.1f} sites/s)")
     conn.commit()
-    print(f"[crawl] done: {done} sites, {total_pages} pages stored, {time.time()-t0:.1f}s")
+    print(f"[crawl] done: {done} sites, {total_pages} pages stored, {errors} errors, {time.time()-t0:.1f}s")
     conn.close()
 
 
@@ -169,34 +182,37 @@ def cmd_extract(args) -> None:
     ]
     print(f"[extract] {len(company_ids)} companies to parse")
 
-    done = 0
+    done = errors = 0
     t0 = time.time()
     for cid in company_ids:
-        page_rows = conn.execute(
-            "SELECT page_type, stored_path FROM crawled_pages WHERE company_id=? AND stored_path IS NOT NULL",
-            (cid,),
-        ).fetchall()
-        headers = None
-        server = conn.execute(
-            "SELECT server_header FROM website_probes WHERE company_id=?", (cid,)
-        ).fetchone()
-        if server and server[0]:
-            headers = {"server": server[0]}
+        try:
+            page_rows = conn.execute(
+                "SELECT page_type, stored_path FROM crawled_pages WHERE company_id=? AND stored_path IS NOT NULL",
+                (cid,),
+            ).fetchall()
+            headers = None
+            server = conn.execute(
+                "SELECT server_header FROM website_probes WHERE company_id=?", (cid,)
+            ).fetchone()
+            if server and server[0]:
+                headers = {"server": server[0]}
 
-        pages = {}
-        for page_type, path in page_rows:
-            try:
-                pages[page_type] = crawl.read_stored_html(args.store, path)
-            except OSError:
-                continue
-        enrichment = extract.extract_from_pages(pages, headers)
-        enrich_db.save_enrichment(conn, cid, enrichment)
+            pages = {}
+            for page_type, path in page_rows:
+                try:
+                    pages[page_type] = crawl.read_stored_html(args.store, path)
+                except OSError:
+                    continue
+            enrichment = extract.extract_from_pages(pages, headers)
+            enrich_db.save_enrichment(conn, cid, enrichment)
+        except Exception:  # noqa: BLE001 - skip bad pages, keep going
+            errors += 1
         done += 1
         if done % 100 == 0:
             conn.commit()
             print(f"  {done}/{len(company_ids)}")
     conn.commit()
-    print(f"[extract] done: {done} companies, {time.time()-t0:.1f}s")
+    print(f"[extract] done: {done} companies, {errors} errors, {time.time()-t0:.1f}s")
     conn.close()
 
 
@@ -298,8 +314,11 @@ def cmd_verify(args) -> None:
     t0 = time.time()
 
     def work(row):
-        cid_email = row
-        return row[0], verifier.verify(row[1])
+        contact_id, email = row
+        try:
+            return contact_id, verifier.verify(email)
+        except Exception:  # noqa: BLE001
+            return contact_id, verify.STATUS_UNKNOWN
 
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         for contact_id, status in ex.map(work, rows):
@@ -324,7 +343,12 @@ SELECT
   COALESCE(p.alive, 0)                                                          AS active_website,
   COALESCE(p.https_ok, 0)                                                       AS https,
   EXISTS(SELECT 1 FROM crawled_pages cp WHERE cp.company_id=c.id AND cp.page_type='contact') AS contact_page,
-  EXISTS(SELECT 1 FROM company_contacts ct WHERE ct.company_id=c.id AND ct.verified NOT IN ('invalid','disposable')) AS has_email,
+  -- Only crawl-sourced emails count: pattern guesses (info@/sales@/...) would
+  -- otherwise give every domain company a free +20 "Email" points.
+  EXISTS(SELECT 1 FROM company_contacts ct
+         WHERE ct.company_id=c.id
+           AND ct.source = 'crawl'
+           AND ct.verified NOT IN ('invalid','disposable')) AS has_email,
   EXISTS(SELECT 1 FROM company_contacts ct WHERE ct.company_id=c.id AND ct.verified='verified') AS has_verified_email,
   EXISTS(SELECT 1 FROM company_socials s WHERE s.company_id=c.id AND s.platform='linkedin') AS has_linkedin,
   (COALESCE(e.description, a.short_description) IS NOT NULL)                     AS has_description,

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import socket
+import warnings
 
 import dns.resolver
 import dns.reversename
@@ -21,6 +22,10 @@ USER_AGENT = (
 )
 
 _DEFAULT_TIMEOUT = httpx.Timeout(12.0, connect=8.0)
+
+# verify=False is intentional (many startup certs are broken/expired); silence
+# the per-request InsecureRequestWarning that would otherwise flood CI logs.
+warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
 
 def make_client() -> httpx.Client:
@@ -208,10 +213,12 @@ def probe_website(client: httpx.Client, domain: str, input_url: str | None) -> d
 
     candidates = [f"https://{domain}", f"http://{domain}"]
     resp = None
+    requested = None
     last_err = None
     for url in candidates:
         try:
             resp = client.get(url)
+            requested = url
             if url.startswith("https://"):
                 result["https_ok"] = True
             break
@@ -227,7 +234,9 @@ def probe_website(client: httpx.Client, domain: str, input_url: str | None) -> d
     result["alive"] = resp.status_code < 400
     result["final_url"] = str(resp.url)
     result["final_scheme"] = resp.url.scheme
-    result["redirected"] = str(resp.url).rstrip("/") != (input_url or candidates[0]).rstrip("/")
+    # Compare against the URL we actually requested, not input_url (which may
+    # carry a path / www and would falsely mark every probe as redirected).
+    result["redirected"] = str(resp.url).rstrip("/") != (requested or "").rstrip("/")
     result["server_header"] = resp.headers.get("server")
 
     ct = resp.headers.get("content-type", "")

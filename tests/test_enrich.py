@@ -124,6 +124,37 @@ def test_discover_page_urls_same_site_only():
     assert urls["blog"] == "https://acme.com/blog/post-1"
     assert "careers" not in urls  # other.com is off-site
 
+def test_discover_page_urls_skips_malformed_href():
+    html = """
+    <a href="http://[bad">broken</a>
+    <a href="/about">About</a>
+    """
+    urls = crawl.discover_page_urls("https://acme.com/", html, "acme.com")
+    assert urls["about"] == "https://acme.com/about"
+
+
+def test_redirect_flag_compares_requested_url():
+    """redirected must compare final URL to the URL we requested, not input_url."""
+    import httpx
+
+    class _FakeResp:
+        def __init__(self, url, status=200, headers=None, text=""):
+            self.url = httpx.URL(url)
+            self.status_code = status
+            self.headers = headers or {"content-type": "text/html"}
+            self.text = text
+
+    class _FakeClient:
+        def get(self, url):
+            # No redirect: final URL equals requested URL.
+            return _FakeResp(url, text="<html><title>Hi</title></html>")
+
+    result = discovery.probe_website(_FakeClient(), "acme.com", "https://www.acme.com/about")
+    assert result["alive"] is True
+    assert result["redirected"] is False  # would have been True under the old bug
+    assert result["https_ok"] is True
+
+
 def test_store_and_read_roundtrip(tmp_path=None):
     import tempfile
     root = tempfile.mkdtemp()

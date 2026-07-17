@@ -50,11 +50,17 @@ def discover_page_urls(home_url: str, home_html: str, root_domain: str) -> dict[
         href = a["href"].strip()
         if not href or href.startswith(("mailto:", "tel:", "javascript:", "#")):
             continue
-        abs_url = str(httpx.URL(home_url).join(href))
+        try:
+            abs_url = str(httpx.URL(home_url).join(href))
+        except Exception:  # noqa: BLE001 - malformed href; skip
+            continue
         if not _same_site(abs_url, root_domain):
             continue
         hay = (href + " " + a.get_text(" ", strip=True)).lower()
-        path = httpx.URL(abs_url).path.lower()
+        try:
+            path = httpx.URL(abs_url).path.lower()
+        except Exception:  # noqa: BLE001
+            continue
         for page_type, keys in PAGE_KEYWORDS.items():
             if page_type in found:
                 continue
