@@ -77,10 +77,12 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           CURRENT_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           # Fail closed: any API/query error exits non-zero and blocks enrich.
+          # GH_REPO makes gh work without a local checkout in this job.
           OTHER=$(gh run list \
             --workflow ".github/workflows/enrich.yml" \
             --json databaseId,status \
