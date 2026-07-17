@@ -1,3 +1,38 @@
+# Five-Minute Enrichment Schedule Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Enable the enrich workflow every 5 minutes for 500 companies, and skip successfully when another run is already active.
+
+**Architecture:** A lightweight `guard` job queries GitHub Actions for other queued/in-progress runs of `enrich.yml`. The existing `enrich` job depends on that output and only runs when clear. The five-minute cron is re-enabled; the concurrency queue is removed.
+
+**Tech Stack:** GitHub Actions YAML, `gh` CLI, existing Python enrichment batch.
+
+## Global Constraints
+
+- Cron: `*/5 * * * *`
+- Default batch limit: `500`
+- Skip behavior: exit early with success when another run is queued or in progress; do not queue
+- Keep release-based DB restore/upload unchanged
+- Fail closed if the guard API request fails
+
+---
+
+### Task 1: Enable cron and add skip-if-running guard
+
+**Files:**
+- Modify: `.github/workflows/enrich.yml`
+- Modify: `README.md` (only if schedule docs still say disabled)
+
+**Interfaces:**
+- Consumes: existing enrich job steps and defaults
+- Produces: `jobs.guard.outputs.should_run` (`"true"` | `"false"`)
+
+- [ ] **Step 1: Rewrite enrich.yml with schedule + guard**
+
+Replace `.github/workflows/enrich.yml` with:
+
+```yaml
 name: Enrich companies (scheduled)
 
 # Runs a batch of the enrichment pipeline on a schedule and persists the
@@ -128,3 +163,26 @@ jobs:
       - name: Job summary
         if: always()
         run: python scripts/status.py companies.db >> "$GITHUB_STEP_SUMMARY"
+```
+
+- [ ] **Step 2: Align README automation section if needed**
+
+Confirm `README.md` Automation section documents every-5-minutes + skip-if-running. Update only if it still claims the schedule is disabled.
+
+- [ ] **Step 3: Validate workflow YAML**
+
+Run:
+
+```bash
+python3 -c "import yaml; yaml.safe_load(open('.github/workflows/enrich.yml')); print('ok')"
+command -v actionlint >/dev/null && actionlint .github/workflows/enrich.yml || echo "actionlint not installed"
+```
+
+Expected: `ok` (and actionlint clean if present).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .github/workflows/enrich.yml README.md docs/superpowers/plans/2026-07-17-enrich-five-minute-schedule.md
+git commit -m "Enable five-minute enrich schedule with skip-if-running"
+```

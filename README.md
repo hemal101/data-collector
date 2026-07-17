@@ -292,7 +292,8 @@ runners:
 - Each run **restores** the DB from a gzipped **GitHub Release asset**
   (tag `db-latest`), runs `batch` on the next ~500 companies per phase, then
   **re-uploads** the updated DB and writes a progress table to the job summary.
-- A `concurrency` group prevents overlapping runs from corrupting the DB.
+- If another enrich run is already queued or in progress, the new tick **skips**
+  enrichment (success, no queue). The next 5-minute cron tries again.
 - **Email verification is skipped** (port 25 blocked on hosted runners).
 
 The DB isn't committed to git (it's >100MB — over GitHub's file limit — and
