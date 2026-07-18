@@ -18,10 +18,10 @@ on:
     inputs:
       limit:
         description: "Companies to process per phase"
-        default: "500"
+        default: "5000"
       workers:
         description: "Concurrent workers"
-        default: "16"
+        default: "32"
 
 permissions:
   contents: write                 # needed to create/update the release asset
